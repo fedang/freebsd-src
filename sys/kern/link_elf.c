@@ -1086,8 +1086,11 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 	 */
 	if (!((hdr->e_phentsize == sizeof(Elf_Phdr)) &&
 	      (hdr->e_phoff + hdr->e_phnum*sizeof(Elf_Phdr) <= PAGE_SIZE) &&
-	      (hdr->e_phoff + hdr->e_phnum*sizeof(Elf_Phdr) <= nbytes)))
+	      (hdr->e_phoff + hdr->e_phnum*sizeof(Elf_Phdr) <= nbytes))) {
 		link_elf_error(filename, "Unreadable program headers");
+		error = ENOEXEC;
+		goto out;
+	}
 
 	/*
 	 * Scan the program header entries, and save key information.
@@ -1107,9 +1110,17 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 				error = ENOEXEC;
 				goto out;
 			}
-			/*
-			 * XXX: We just trust they come in right order ??
-			 */
+			if (phdr->p_memsz < phdr->p_filesz) {
+				link_elf_error(filename, "Invalid segment size");
+				error = ENOEXEC;
+				goto out;
+			}
+			if (phdr->p_vaddr + phdr->p_memsz < phdr->p_vaddr) {
+				link_elf_error(filename, "Segment address overflow");
+				error = ENOEXEC;
+				goto out;
+			}
+
 			segs[nsegs] = phdr;
 			++nsegs;
 			break;
@@ -1134,6 +1145,17 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 		link_elf_error(filename, "No sections");
 		error = ENOEXEC;
 		goto out;
+	}
+
+	/*
+	 * Segment entries must appear in the proper order.
+	 */
+	for (i = 0; i < nsegs - 1; i++) {
+		if (segs[i]->p_vaddr + segs[i]->p_memsz > segs[i+1]->p_vaddr) {
+			link_elf_error(filename, "Segments are unsorted or overlapping");
+			error = ENOEXEC;
+			goto out;
+		}
 	}
 
 	/*
@@ -1215,6 +1237,14 @@ link_elf_load_file(linker_class_t cls, const char* filename,
 			goto out;
 		bzero(segbase + segs[i]->p_filesz,
 		    segs[i]->p_memsz - segs[i]->p_filesz);
+	}
+
+	if ((phdyn->p_vaddr < base_vaddr) ||
+	    (phdyn->p_vaddr >= base_vaddr + mapsize) ||
+	    (phdyn->p_memsz > mapsize - (phdyn->p_vaddr - base_vaddr))) {
+		link_elf_error(filename, "Dynamic segment out of bounds");
+		error = ENOEXEC;
+		goto out;
 	}
 
 	ef->dynamic = (Elf_Dyn *) (mapbase + phdyn->p_vaddr - base_vaddr);
