@@ -24,6 +24,9 @@ static TAILQ_HEAD(, kpatch_set)			kpatch_list;
 static struct sx				kpatch_sx;
 static RB_HEAD(kpatch_syms, kpatch_func)	kpatch_syms;
 
+uint64_t kpatch_active_mask;
+uint64_t kpatch_allocated_mask;
+
 static volatile int	kpatch_failed_cpus;
 
 static MALLOC_DEFINE(M_KPATCH, "kpatch", "Kernel live-patching memory");
@@ -336,77 +339,77 @@ kpatch_func_resolve(struct kpatch_func *func)
 	return (0);
 }
 
-static int
-kpatch_check_stack(struct stack *st, struct kpatch_set *set)
-{
-	struct kpatch_func *func;
-	int i;
-
-	for (i = 0; i < st->depth; i++) {
-		TAILQ_FOREACH(func, &set->funcs, link) {
-			if (st->pcs[i] < (vm_offset_t)func->old_addr + func->old_size
-				&& st->pcs[i] >= (vm_offset_t)func->old_addr) {
-				return (1);
-			}
-		}
-	}
-
-	return (0);
-}
-
-static int
-kpatch_check_allproc(struct kpatch_set *set)
-{
-	struct proc *p;
-	struct thread *td;
-	struct stack st;
-	bool sched;
-
-	/* Fake this variable to bust lock checks */
-	sched = scheduler_stopped;
-	scheduler_stopped = true;
-
-	FOREACH_PROC_IN_SYSTEM(p) {
-		FOREACH_THREAD_IN_PROC(p, td) {
-			/* Already checked in the rendezvous action */
-			if (TD_IS_RUNNING(td))
-				continue;
-
-			stack_save_td(&st, td);
-			if (kpatch_check_stack(&st, set)) {
-				scheduler_stopped = sched;
-				return (1);
-			}
-		}
-	}
-
-	scheduler_stopped = sched;
-	return (0);
-}
+//static int
+//kpatch_check_stack(struct stack *st, struct kpatch_set *set)
+//{
+//	struct kpatch_func *func;
+//	int i;
+//
+//	for (i = 0; i < st->depth; i++) {
+//		TAILQ_FOREACH(func, &set->funcs, link) {
+//			if (st->pcs[i] < (vm_offset_t)func->old_addr + func->old_size
+//				&& st->pcs[i] >= (vm_offset_t)func->old_addr) {
+//				return (1);
+//			}
+//		}
+//	}
+//
+//	return (0);
+//}
+//
+//static int
+//kpatch_check_allproc(struct kpatch_set *set)
+//{
+//	struct proc *p;
+//	struct thread *td;
+//	struct stack st;
+//	bool sched;
+//
+//	/* Fake this variable to bust lock checks */
+//	sched = scheduler_stopped;
+//	scheduler_stopped = true;
+//
+//	FOREACH_PROC_IN_SYSTEM(p) {
+//		FOREACH_THREAD_IN_PROC(p, td) {
+//			/* Already checked in the rendezvous action */
+//			if (TD_IS_RUNNING(td))
+//				continue;
+//
+//			stack_save_td(&st, td);
+//			if (kpatch_check_stack(&st, set)) {
+//				scheduler_stopped = sched;
+//				return (1);
+//			}
+//		}
+//	}
+//
+//	scheduler_stopped = sched;
+//	return (0);
+//}
 
 static void
 kpatch_rendezvous_setup(void *arg)
 {
-	struct stack st;
-	struct rendezvous_ctx *ctx;
+	//struct stack st;
+	//struct rendezvous_ctx *ctx;
 
-	ctx = arg;
+	//ctx = arg;
 
-	/* First, each cpu analyzes their current stack */
-	stack_zero(&st);
-	stack_save(&st);
+	///* First, each cpu analyzes their current stack */
+	//stack_zero(&st);
+	//stack_save(&st);
 
-	if (kpatch_check_stack(&st, ctx->patch)) {
-		atomic_add_int(&kpatch_failed_cpus, 1);
-		return;
-	}
+	//if (kpatch_check_stack(&st, ctx->patch)) {
+	//	atomic_add_int(&kpatch_failed_cpus, 1);
+	//	return;
+	//}
 
-	/* The master cpu checks all the stacks in allproc */
-	if (curcpu == ctx->cpuid) {
-		if (kpatch_check_allproc(ctx->patch)) {
-			atomic_add_int(&kpatch_failed_cpus, 1);
-		}
-	}
+	///* The master cpu checks all the stacks in allproc */
+	//if (curcpu == ctx->cpuid) {
+	//	if (kpatch_check_allproc(ctx->patch)) {
+	//		atomic_add_int(&kpatch_failed_cpus, 1);
+	//	}
+	//}
 }
 
 static void
@@ -464,7 +467,8 @@ static int
 kpatch_func_apply(struct kpatch_func *func, void *arg __unused)
 {
 	if (!func->patched) {
-		kpatch_install_trampoline(func);
+		//kpatch_install_trampoline(func);
+		kpatch_install_trap(func);
 		func->patched = true;
 	}
 
@@ -520,21 +524,31 @@ kpatch_set_enable(struct kpatch_set *set)
 
 	if (set->pre_patch != NULL) {
 		error = set->pre_patch();
-		if (error != 0) {
-			TAILQ_FOREACH(func, &set->funcs, link) {
-				RB_REMOVE(kpatch_syms, &kpatch_syms, func);
-			}
-			return (error);
-		}
 	}
+
+	set->active_id = ffsll(~kpatch_allocated_mask) - 1;
+	if (set->active_id == -1) {
+		error = EBUSY;
+	}
+
+	if (error != 0) {
+		TAILQ_FOREACH(func, &set->funcs, link) {
+			RB_REMOVE(kpatch_syms, &kpatch_syms, func);
+		}
+		return (error);
+	}
+
+	kpatch_allocated_mask |= (1ULL << set->active_id);
 
 	error = kpatch_rendezvous(set, kpatch_func_apply);
 	if (error == 0) {
 		set->enabled = true;
+		kpatch_active_mask |= (1ULL << set->active_id);
 	} else {
 		TAILQ_FOREACH(func, &set->funcs, link) {
 			RB_REMOVE(kpatch_syms, &kpatch_syms, func);
 		}
+		kpatch_allocated_mask &= ~(1ULL << set->active_id);
 	}
 
 	if (set->post_patch != NULL)
@@ -564,6 +578,8 @@ kpatch_set_disable(struct kpatch_set *set)
 	error = kpatch_rendezvous(set, kpatch_func_rollback);
 	if (error == 0) {
 		set->enabled = false;
+
+		kpatch_active_mask &= ~(1ULL << set->active_id);
 
 		TAILQ_FOREACH(func, &set->funcs, link) {
 			RB_REMOVE(kpatch_syms, &kpatch_syms, func);
@@ -814,6 +830,16 @@ kpatch_detect(linker_file_t lf)
 
 	lf->kpatch_info = info;
 	return (0);
+}
+
+struct kpatch_func *
+kpatch_func_find(uintptr_t addr)
+{
+	struct kpatch_func find, *res;
+
+	find.old_addr = (void *)addr;
+	res = RB_FIND(kpatch_syms, &kpatch_syms, &find);
+	return (res);
 }
 
 static void

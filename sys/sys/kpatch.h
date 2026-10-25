@@ -66,6 +66,7 @@ struct kpatch_reloc_metadata {
  */
 struct kpatch_set {
 	const char *name;
+	int active_id;
 	TAILQ_HEAD(, kpatch_func) funcs;
 	bool enabled;
 	bool attached;
@@ -113,6 +114,14 @@ void kpatch_install_trampoline(struct kpatch_func *func);
 void kpatch_restore_trampoline(struct kpatch_func *func);
 
 void kpatch_flush_icache(void);
+
+int kpatch_trap_handler(struct trapframe *tf);
+
+void kpatch_install_trap(struct kpatch_func *func);
+
+struct kpatch_func *kpatch_func_find(uintptr_t addr);
+
+extern uint64_t kpatch_active_mask;
 
 #endif /* KPATCH_INTERNAL */
 
