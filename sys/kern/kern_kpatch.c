@@ -11,6 +11,8 @@
 #include <sys/sx.h>
 #include <sys/proc.h>
 #include <sys/stack.h>
+#include <sys/kthread.h>
+#include <sys/mutex.h>
 
 #include <vm/vm.h>
 #include <vm/pmap.h>
@@ -26,6 +28,13 @@ static RB_HEAD(kpatch_syms, kpatch_func)	kpatch_syms;
 
 uint64_t kpatch_active_mask;
 uint64_t kpatch_allocated_mask;
+uint64_t kpatch_transition_mask;
+
+static struct kpatch_set *kpatch_sets[64];
+
+static struct mtx	kpatch_td_mtx;
+static struct cv	kpatch_td_cv;
+static struct thread   *kpatch_td;
 
 static volatile int	kpatch_failed_cpus;
 
@@ -388,6 +397,12 @@ kpatch_func_resolve(struct kpatch_func *func)
 //}
 
 static void
+kpatch_stack_walker(void *dummy __unused)
+{
+	// TODO
+}
+
+static void
 kpatch_rendezvous_setup(void *arg)
 {
 	//struct stack st;
@@ -542,8 +557,15 @@ kpatch_set_enable(struct kpatch_set *set)
 
 	error = kpatch_rendezvous(set, kpatch_func_apply);
 	if (error == 0) {
-		set->enabled = true;
+		// TODO: Kassert on the set being NULL maybe?
+		kpatch_sets[set->active_id] = set;
+
+		mtx_lock(&kpatch_td_mtx);
 		kpatch_active_mask |= (1ULL << set->active_id);
+		kpatch_transition_mask |= (1ULL << set->active_id);
+		cv_signal(&kpatch_td_cv);
+		mtx_unlock(&kpatch_td_mtx);
+		set->enabled = true;
 	} else {
 		TAILQ_FOREACH(func, &set->funcs, link) {
 			RB_REMOVE(kpatch_syms, &kpatch_syms, func);
@@ -577,9 +599,13 @@ kpatch_set_disable(struct kpatch_set *set)
 
 	error = kpatch_rendezvous(set, kpatch_func_rollback);
 	if (error == 0) {
-		set->enabled = false;
-
+		mtx_lock(&kpatch_td_mtx);
 		kpatch_active_mask &= ~(1ULL << set->active_id);
+		kpatch_transition_mask |= (1ULL << set->active_id);
+		cv_signal(&kpatch_td_cv);
+		mtx_unlock(&kpatch_td_mtx);
+
+		set->enabled = false;
 
 		TAILQ_FOREACH(func, &set->funcs, link) {
 			RB_REMOVE(kpatch_syms, &kpatch_syms, func);
@@ -848,6 +874,10 @@ kpatch_init(void *dummy __unused)
 	TAILQ_INIT(&kpatch_list);
 	RB_INIT(&kpatch_syms);
 	sx_init(&kpatch_sx, "kpatch");
+
+	mtx_init(&kpatch_td_mtx, "kpatch_mtx", NULL, MTX_DEF);
+	cv_init(&kpatch_td_cv, "kpatch_cv");
+	kthread_add(kpatch_stack_walker, NULL, NULL, &kpatch_td, 0, 0, "[kpatch]");
 
 	printf("kpatch: Kernel live-patching available\n");
 }
