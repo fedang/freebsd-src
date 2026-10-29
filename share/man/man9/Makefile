@@ -218,6 +218,7 @@ MAN=	accept_filter.9 \
 	kstack_contains.9 \
 	kthread.9 \
 	ktr.9 \
+	linker_set.9 \
 	lock.9 \
 	locking.9 \
 	LOCK_PROFILING.9 \

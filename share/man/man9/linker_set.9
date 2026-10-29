@@ -1,0 +1,114 @@
+.\"-
+.\" Copyright (c) 2026 Federico Angelilli <fedang@FreeBSD.org>
+.\"
+.\" SPDX-License-Identifier: BSD-2-Clause
+.\"
+.Dd October 29, 2026
+.Dt LINKER_SET 9
+.Os
+.Sh NAME
+.Nm linker_set
+.Nd linker mechanism to group together statically declared objects
+.Sh SYNOPSIS
+.In sys/cdefs.h
+.In sys/linker_set.h
+.Ss Add entry to a set
+.Fn TEXT_SET set sym
+.Fn DATA_SET set sym
+.Fn DATA_WSET set sym
+.Ss Set declaration and manipulation
+.Fn SET_DECLARE set ptype
+.Fn SET_BEGIN set
+.Fn SET_LIMIT set
+.Fn SET_FOREACH pvar set
+.Fn SET_ITEM set i
+.Fn SET_COUNT set
+.Sh DESCRIPTION
+The linker set mechanism allows the declaration of global sets of objects.
+Items can be added to a set from anywhere by using the
+.Fn *_SET
+macros.
+Then, the linker collects the items and stores a set as an array of pointers.
+For ELF, this is done by constructing a separate section for each set.
+.Pp
+The
+.Fn TEXT_SET
+macro appends the executable symbol
+.Fa sym
+to the given linker
+.Fa set .
+.Pp
+The
+.Fn DATA_SET
+macro appends the data symbol
+.Fa sym
+to the given linker
+.Fa set .
+.Pp
+The
+.Fn DATA_WSET
+macro is similar to the previous one, but the linker set is treated as writable.
+.Pp
+The
+.Fn SET_DECLARE
+macro initializes the given linker
+.Fa set ,
+and should be used before accessing it.
+.Pp
+The
+.Fn SET_BEGIN
+and
+.Fn SET_LIMIT
+macros respectively calculate the pointer to the first and last element in the
+.Fa set .
+.Pp
+The
+.Fn SET_FOREACH
+macro can be used as a for loop statement to iterate the items in the
+.Fa set .
+The
+.Fa pvar
+argument should be declared as
+.Ql type **
+since sets contain the addresses of the elements.
+.Pp
+The
+.Fn SET_ITEM
+macro retrieves the item in the i-th position.
+No bounds checking is performed.
+.Pp
+The
+.Fn SET_COUNT
+macro calculates the number of items in the
+.Fa set .
+.Sh EXAMPLES
+A new linker set can be declared and manipulated like this:
+.Bd -literal -offset indent
+struct var {
+	int val;
+};
+
+SET_DECLARE(vars_set, struct var);
+
+struct var **ptr;
+SET_FOREACH(ptr, vars_set) {
+	printf("val is %d\en", (*ptr)->val);
+}
+.Ed
+.Pp
+then new items can be added to the set from other locations:
+.Bd -literal -offset indent
+static struct var myvar = {
+	.val = 42
+};
+DATA_SET(vars_set, myvar);
+.Ed
+.Sh SEE ALSO
+.Xr MODULE_DEPEND 9 ,
+.Xr SYSINIT 9
+.Sh HISTORY
+The linker set mechanism first appeared in
+.Fx 1.1 .
+.Sh AUTHORS
+This manual page was written by
+.An Federico Angelilli Aq Mt fedang@FreeBSD.org .
